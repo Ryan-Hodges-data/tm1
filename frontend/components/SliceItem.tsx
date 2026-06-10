@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback, useEffect } from 'react';
 import { Slice } from '@/lib/types';
 
 interface DropZone {
@@ -19,6 +19,8 @@ interface Props {
   onDrop: (targetId: string, zone: 'before' | 'inside' | 'after') => void;
   onChange: (id: string, fields: Partial<Slice>) => void;
   onDelete: (id: string) => void;
+  onCopy: (id: string) => void;
+  onInsertBelow: (id: string) => void;
   canMoveUp: boolean;
   canMoveDown: boolean;
   onMoveUp: () => void;
@@ -39,6 +41,8 @@ export default function SliceItem({
   onDrop,
   onChange,
   onDelete,
+  onCopy,
+  onInsertBelow,
   canMoveUp,
   canMoveDown,
   onMoveUp,
@@ -51,6 +55,10 @@ export default function SliceItem({
   const [localName, setLocalName] = useState(slice.user_name);
   const [localDuration, setLocalDuration] = useState(String(slice.duration_minutes));
   const debounceRef = useRef<NodeJS.Timeout>();
+
+  // Keep local inputs in sync when external syncs change the props
+  useEffect(() => { setLocalRole(slice.role); }, [slice.role]);
+  useEffect(() => { setLocalName(slice.user_name); }, [slice.user_name]);
 
   const debounce = useCallback((fn: () => void) => {
     clearTimeout(debounceRef.current);
@@ -233,6 +241,30 @@ export default function SliceItem({
           </div>
           <span className="text-xs text-slate-400">min</span>
         </div>
+
+        {/* Insert below */}
+        <button
+          onClick={() => onInsertBelow(slice.id)}
+          className="flex-shrink-0 text-slate-300 hover:text-green-500 transition-colors p-0.5"
+          title="Insert below"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <line x1="7" y1="2" x2="7" y2="12" />
+            <line x1="2" y1="7" x2="12" y2="7" />
+          </svg>
+        </button>
+
+        {/* Copy */}
+        <button
+          onClick={() => onCopy(slice.id)}
+          className="flex-shrink-0 text-slate-300 hover:text-blue-400 transition-colors p-0.5"
+          title="Duplicate"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <rect x="4" y="4" width="8" height="8" rx="1" />
+            <path d="M2 10V2h8" />
+          </svg>
+        </button>
 
         {/* Delete */}
         <button

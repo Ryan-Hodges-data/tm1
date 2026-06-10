@@ -15,9 +15,11 @@ interface Props {
   onSlicesChange: (slices: Slice[]) => void;
   onChange: (id: string, fields: Partial<Slice>) => void;
   onDelete: (id: string) => void;
+  onCopy: (id: string) => void;
+  onInsertBelow: (id: string) => void;
 }
 
-export default function SliceList({ slices, onSlicesChange, onChange, onDelete }: Props) {
+export default function SliceList({ slices, onSlicesChange, onChange, onDelete, onCopy, onInsertBelow }: Props) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropZone | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -156,6 +158,8 @@ export default function SliceList({ slices, onSlicesChange, onChange, onDelete }
         onDrop={handleDrop}
         onChange={onChange}
         onDelete={onDelete}
+        onCopy={onCopy}
+        onInsertBelow={onInsertBelow}
         canMoveUp={idx > 0}
         canMoveDown={idx < children.length - 1}
         onMoveUp={() => handleMove(slice.id, 'up', slice.parent_id)}

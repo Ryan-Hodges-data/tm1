@@ -1,3 +1,4 @@
+import io
 import os
 import uuid
 import sqlite3
@@ -5,8 +6,17 @@ from typing import Optional
 from contextlib import contextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_RIGHT
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import (
+    HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+)
 
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "./agenda.db")
 
@@ -196,6 +206,169 @@ def update_settings(data: SettingsUpdate):
             "SELECT key, value FROM settings"
         ).fetchall()}
     return result
+
+
+# ── PDF helpers ──────────────────────────────────────────────────────────────
+
+def _parse_start_time(time_str: str) -> int:
+    h, *rest = time_str.split(":")
+    m = int(rest[0]) if rest else 0
+    return (int(h) % 12) * 60 + m
+
+
+def _fmt(total_min: int) -> str:
+    w = total_min % 720
+    h, m = divmod(w, 60)
+    return f"{12 if h == 0 else h}:{m:02d}"
+
+
+def _build_timeline(slices: list, starting_time: str) -> list:
+    cursor = _parse_start_time(starting_time)
+    result = []
+
+    def traverse(parent_id, depth):
+        nonlocal cursor
+        for s in sorted(
+            [s for s in slices if s.get("parent_id") == parent_id],
+            key=lambda s: s.get("order_index", 0),
+        ):
+            start = cursor
+            if s.get("enabled") and s.get("duration_minutes", 0) > 0:
+                cursor += s["duration_minutes"]
+            result.append({**s, "depth": depth, "start_min": start, "end_min": cursor})
+            traverse(s["id"], depth + 1)
+
+    traverse(None, 0)
+    return result
+
+
+@app.get("/api/agenda/pdf")
+def download_pdf():
+    with get_db() as conn:
+        slices = [row_to_slice(r) for r in conn.execute(
+            "SELECT * FROM slices ORDER BY order_index"
+        ).fetchall()]
+        settings = {r["key"]: r["value"] for r in conn.execute(
+            "SELECT key, value FROM settings"
+        ).fetchall()}
+
+    title = settings.get("title", "Meeting Agenda")
+    start_time = settings.get("starting_time", "9:00")
+    entries = _build_timeline(slices, start_time)
+
+    # ── palette ──
+    C_DARK   = colors.HexColor("#1e293b")
+    C_MID    = colors.HexColor("#475569")
+    C_LIGHT  = colors.HexColor("#94a3b8")
+    C_BORDER = colors.HexColor("#e2e8f0")
+    C_HEAD   = colors.HexColor("#f1f5f9")
+    C_ALT    = colors.HexColor("#f8fafc")
+
+    # ── styles ──
+    def ps(name, **kw):
+        return ParagraphStyle(name, **kw)
+
+    s_title = ps("T", fontName="Helvetica-Bold", fontSize=22,
+                 textColor=C_DARK, leading=28, spaceAfter=4)
+    s_sub   = ps("S", fontName="Helvetica", fontSize=11,
+                 textColor=C_MID, spaceAfter=0)
+    s_head  = ps("H", fontName="Helvetica-Bold", fontSize=8,
+                 textColor=C_MID, leading=10)
+    s_cell  = ps("C", fontName="Helvetica", fontSize=10,
+                 textColor=C_DARK, leading=14)
+    s_dim   = ps("D", fontName="Helvetica-Oblique", fontSize=10,
+                 textColor=C_LIGHT, leading=14)
+    s_right = ps("R", fontName="Helvetica", fontSize=10,
+                 textColor=C_DARK, leading=14, alignment=TA_RIGHT)
+    s_right_dim = ps("RD", fontName="Helvetica-Oblique", fontSize=10,
+                     textColor=C_LIGHT, leading=14, alignment=TA_RIGHT)
+
+    # ── build story ──
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=letter,
+        leftMargin=0.9 * inch, rightMargin=0.9 * inch,
+        topMargin=0.9 * inch, bottomMargin=0.9 * inch,
+        title=title,
+    )
+    story = []
+
+    story.append(Paragraph(title, s_title))
+    story.append(Paragraph(f"Starting at {start_time}", s_sub))
+    story.append(Spacer(1, 14))
+    story.append(HRFlowable(width="100%", thickness=1, color=C_BORDER, spaceAfter=14))
+
+    if not entries:
+        story.append(Paragraph("No agenda items.", s_dim))
+    else:
+        COL = [1.55 * inch, 1.35 * inch, 2.3 * inch, 0.65 * inch]
+
+        rows = [[
+            Paragraph("TIME", s_head),
+            Paragraph("ROLE", s_head),
+            Paragraph("NAME", s_head),
+            Paragraph("MIN", s_head),
+        ]]
+        alt_rows = []
+
+        for i, e in enumerate(entries, start=1):
+            off = not e.get("enabled") or e.get("duration_minutes", 0) == 0
+            sc, sr = (s_dim, s_right_dim) if off else (s_cell, s_right)
+            pad = " " * (e["depth"] * 4)  # non-breaking spaces for indent
+
+            if off:
+                time_str, dur_str = "—", "—"
+            else:
+                time_str = f"{_fmt(e['start_min'])} – {_fmt(e['end_min'])}"
+                dur_str  = str(e.get("duration_minutes", ""))
+
+            rows.append([
+                Paragraph(pad + time_str, sc),
+                Paragraph(e.get("role") or "", sc),
+                Paragraph(e.get("user_name") or "", sc),
+                Paragraph(dur_str, sr),
+            ])
+            if i % 2 == 0:
+                alt_rows.append(("BACKGROUND", (0, i), (-1, i), C_ALT))
+
+        tbl = Table(rows, colWidths=COL, repeatRows=1)
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, 0), C_HEAD),
+            ("LINEBELOW",     (0, 0), (-1, 0), 1,   C_BORDER),
+            ("BOX",           (0, 0), (-1, -1), 0.5, C_BORDER),
+            ("LINEBELOW",     (0, 1), (-1, -1), 0.5, C_BORDER),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 8, ),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 8, ),
+            ("TOPPADDING",    (0, 0), (-1, 0),  6, ),
+            ("BOTTOMPADDING", (0, 0), (-1, 0),  6, ),
+            ("TOPPADDING",    (0, 1), (-1, -1), 5, ),
+            ("BOTTOMPADDING", (0, 1), (-1, -1), 5, ),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+            *alt_rows,
+        ]))
+        story.append(tbl)
+
+        total = sum(
+            e.get("duration_minutes", 0)
+            for e in entries
+            if e.get("enabled") and e.get("duration_minutes", 0) > 0
+        )
+        story.append(Spacer(1, 10))
+        story.append(HRFlowable(width="100%", thickness=0.5, color=C_BORDER, spaceAfter=6))
+        story.append(Paragraph(
+            f"Total duration: <b>{total} minutes</b>",
+            ps("F", fontName="Helvetica", fontSize=9, textColor=C_MID, alignment=TA_RIGHT),
+        ))
+
+    doc.build(story)
+    buf.seek(0)
+    safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in title).strip()
+    filename = f"{safe or 'agenda'}.pdf"
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 static_dir = os.path.join(os.path.dirname(__file__), "..", "static")

@@ -48,13 +48,98 @@ export default function Home() {
   }, [slices]);
 
   const handleChange = useCallback(async (id: string, fields: Partial<Slice>) => {
+    if (fields.role !== undefined) {
+      const oldRole = slices.find((s) => s.id === id)?.role ?? '';
+      if (oldRole && oldRole !== fields.role) {
+        const newRole = fields.role;
+        setSlices((prev) => prev.map((s) => s.role === oldRole ? { ...s, role: newRole } : s));
+        try {
+          await Promise.all(
+            slices.filter((s) => s.role === oldRole).map((s) => api.updateSlice(s.id, { role: newRole }))
+          );
+        } catch {
+          setError('Failed to save changes.');
+        }
+        return;
+      }
+    }
+    if (fields.user_name !== undefined) {
+      const current = slices.find((s) => s.id === id);
+      const role = current?.role ?? '';
+      if (role && current?.user_name !== fields.user_name) {
+        const newName = fields.user_name;
+        setSlices((prev) => prev.map((s) => s.role === role ? { ...s, user_name: newName } : s));
+        try {
+          await Promise.all(
+            slices.filter((s) => s.role === role).map((s) => api.updateSlice(s.id, { user_name: newName }))
+          );
+        } catch {
+          setError('Failed to save changes.');
+        }
+        return;
+      }
+    }
     setSlices((prev) => prev.map((s) => (s.id === id ? { ...s, ...fields } : s)));
     try {
       await api.updateSlice(id, fields);
     } catch {
       setError('Failed to save changes.');
     }
-  }, []);
+  }, [slices]);
+
+  const handleInsertBelow = useCallback(async (id: string) => {
+    const original = slices.find((s) => s.id === id)!;
+    const insertAt = original.order_index + 1;
+    const shifted = slices.map((s) =>
+      s.parent_id === original.parent_id && s.order_index >= insertAt
+        ? { ...s, order_index: s.order_index + 1 }
+        : s
+    );
+    try {
+      const created = await api.createSlice({
+        role: '',
+        user_name: '',
+        duration_minutes: 5,
+        enabled: true,
+        parent_id: original.parent_id,
+        order_index: insertAt,
+      });
+      const withNew = [...shifted, created];
+      setSlices(withNew);
+      await api.reorderSlices(
+        withNew.map((s) => ({ id: s.id, parent_id: s.parent_id, order_index: s.order_index }))
+      );
+    } catch {
+      setError('Failed to insert item.');
+    }
+  }, [slices]);
+
+  const handleCopy = useCallback(async (id: string) => {
+    const original = slices.find((s) => s.id === id)!;
+    const insertAt = original.order_index + 1;
+    const shifted = slices.map((s) =>
+      s.parent_id === original.parent_id && s.order_index >= insertAt
+        ? { ...s, order_index: s.order_index + 1 }
+        : s
+    );
+    try {
+      const copy = await api.createSlice({
+        role: original.role,
+        user_name: original.user_name,
+        duration_minutes: original.duration_minutes,
+        enabled: original.enabled,
+        parent_id: original.parent_id,
+        order_index: insertAt,
+      });
+      const withCopy = [...shifted, copy];
+      setSlices(withCopy);
+      await api.reorderSlices(
+        withCopy.map((s) => ({ id: s.id, parent_id: s.parent_id, order_index: s.order_index }))
+      );
+    } catch {
+      setError('Failed to copy item.');
+    }
+  }, [slices]);
 
   const handleDelete = useCallback(async (id: string) => {
     // Optimistically remove the slice and all its descendants from local state
@@ -161,6 +246,8 @@ export default function Home() {
                 onSlicesChange={handleSlicesChange}
                 onChange={handleChange}
                 onDelete={handleDelete}
+                onCopy={handleCopy}
+                onInsertBelow={handleInsertBelow}
               />
             )}
 
@@ -181,7 +268,22 @@ export default function Home() {
           {/* Right: timeline */}
           <div className="w-80 flex-shrink-0">
             <div className="sticky top-6">
-              <h2 className="text-sm font-medium text-slate-500 uppercase tracking-wide mb-4">Timeline</h2>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-sm font-medium text-slate-500 uppercase tracking-wide">Timeline</h2>
+                <a
+                  href="/api/agenda/pdf"
+                  className="flex items-center gap-1 text-xs text-slate-400 hover:text-red-500 transition-colors"
+                  title="Download PDF"
+                >
+                  <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <rect x="1" y="1" width="11" height="11" rx="1.5" />
+                    <line x1="4" y1="4.5" x2="9" y2="4.5" />
+                    <line x1="4" y1="6.5" x2="9" y2="6.5" />
+                    <line x1="4" y1="8.5" x2="7" y2="8.5" />
+                  </svg>
+                  PDF
+                </a>
+              </div>
               <div className="bg-white border border-slate-200 rounded-lg p-4">
                 <Timeline slices={slices} startingTime={settings.starting_time} />
               </div>
